@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install commitizen
+
+      - name: Get commit message
+        run: |
+          echo "COMMIT_MSG<<EOF" >> $GITHUB_ENV
+          git log -1 --pretty=%B >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Attempt version bump (if applicable)
+        run: |
+          COMMIT_MSG="${{ env.COMMIT_MSG }}"
+          if echo "$COMMIT_MSG" | grep -qE "^(fix|feat|refactor|perf)(\([^)]+\))?\!?: "; then
+            echo "Conventional commit detected – bumping version."
+            cz bump --yes || echo "No version bump occurred."
+          else
+            echo "Non-bump commit type – skipping version bump."
+          fi
+
+      - name: Push changes
+        run: git push --follow-tags
