@@ -259,3 +259,11 @@ docker-compose.override.yml
 # Ignore all cache files/directories
 **/*cache*
 **/.cache*
+
+# =========================
+# Data & Database
+# =========================
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet

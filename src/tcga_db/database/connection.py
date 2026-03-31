@@ -55,6 +55,14 @@ class DatabaseManager:
 
             self._connection.execute("SET enable_progress_bar = true")
 
+            # Set temp directory for spill-to-disk on large operations
+            if not self.settings.database.memory:
+                from pathlib import Path
+
+                tmp_dir = Path("data/tmp")
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                self._connection.execute(f"SET temp_directory = '{tmp_dir}'")
+
             logger.info("Database connection established successfully")
 
         return self._connection
