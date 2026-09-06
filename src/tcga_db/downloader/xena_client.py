@@ -25,10 +25,9 @@ PHASE_2_SOURCES: dict[str, str] = {
         "/broad.mit.edu_PANCAN_Genome_Wide_SNP_6_whitelisted.gene.xena.gz"
     ),
     "somatic_mutations": (f"{_PANCAN_BASE}/mc3.v0.2.8.PUBLIC.xena.gz"),
-    # ABSOLUTE purity/ploidy — Pan-Cancer Atlas file returns 403 on public
-    # S3.  Download manually from Synapse syn7824274 (free registration)
-    # and place in data/cache/ as 'TCGA_mastercalls.abs_tables_JSedit.fixed.txt'.
-    # Alternatively the GDC open-access UUID below may work:
+    # ABSOLUTE purity/ploidy, served open-access by the GDC PanCanAtlas
+    # publication page.  The endpoint rejects HEAD requests with 400 but
+    # serves GET normally.
     "sample_qc": (
         "https://api.gdc.cancer.gov/data/4f277128-f793-4354-a13d-30cc7fe9f6b5"
     ),
@@ -40,19 +39,48 @@ EXTERNAL_SOURCES: dict[str, str] = {
         "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human"
         "/release_23/gencode.v23.annotation.gtf.gz"
     ),
-    # TCGA COSMIC SBS signature exposures (Alexandrov et al. 2020 Cell).
-    # Available from Synapse syn11738669 (requires authentication).
-    # Download manually and place in data/cache/ as
-    # 'TCGA_SBS_signatures.tsv', then register with:
-    #   tcga-db download --datasets mutational_signatures
-    # Alternatively set TCGA_MUTATIONAL_SIGNATURES_URL env var to a
-    # direct download URL.
+}
+
+# GDC data endpoints are keyed by UUID, so the URL carries no filename.
+_FILENAME_OVERRIDES: dict[str, str] = {
+    "sample_qc": "TCGA_mastercalls.abs_tables_JSedit.fixed.txt",
+}
+
+# Datasets with no automated download route.  PanCanAtlas publishes no
+# mutational signature exposures, and the Synapse release is behind a
+# login, so the file has to be fetched by hand.
+MANUAL_SOURCES: dict[str, str] = {
     "mutational_signatures": (
-        "https://api.gdc.cancer.gov/data/1c8cfe5f-e52d-41ba-94da-f15ea1337189"
+        "COSMIC SBS signature exposures are not part of the GDC PanCanAtlas "
+        "release.\n"
+        "Download the TCGA SBS signature activity table from Synapse "
+        "syn11738669\n"
+        "(Alexandrov et al. 2020, Nature — free registration required), then:\n"
+        "  1. save it as data/cache/TCGA_SBS_signatures.tsv\n"
+        "  2. run: tcga-db load\n"
+        "Alternatively, derive exposures locally from the MC3 mutations "
+        "already\n"
+        "in the database using SigProfilerExtractor or sigminer."
     ),
 }
 
 _CHUNK_SIZE = 64 * 1024  # 64 KB per read
+
+
+class ManualDownloadRequired(RuntimeError):
+    """Raised when a dataset cannot be fetched without manual steps.
+
+    Attributes:
+        dataset_name: The dataset that was requested.
+        instructions: Human-readable steps for obtaining the file.
+    """
+
+    def __init__(self, dataset_name: str, instructions: str) -> None:
+        super().__init__(
+            f"{dataset_name!r} has no automated download URL.\n{instructions}"
+        )
+        self.dataset_name = dataset_name
+        self.instructions = instructions
 
 
 class XenaDownloader:
@@ -82,7 +110,12 @@ class XenaDownloader:
             Sorted list of keys from all source dictionaries.
         """
         return sorted(
-            {**PHASE_1_SOURCES, **PHASE_2_SOURCES, **EXTERNAL_SOURCES}
+            {
+                **PHASE_1_SOURCES,
+                **PHASE_2_SOURCES,
+                **EXTERNAL_SOURCES,
+                **MANUAL_SOURCES,
+            }
         )
 
     def download_file(
@@ -110,7 +143,14 @@ class XenaDownloader:
                 after all retries are exhausted.
             httpx.RequestError: If a network-level error persists beyond the
                 retry limit.
+            ManualDownloadRequired: If the dataset is listed in
+                :data:`MANUAL_SOURCES` and must be fetched by hand.
         """
+        if dataset_name in MANUAL_SOURCES:
+            raise ManualDownloadRequired(
+                dataset_name, MANUAL_SOURCES[dataset_name]
+            )
+
         all_sources = {
             **PHASE_1_SOURCES,
             **PHASE_2_SOURCES,
@@ -131,7 +171,9 @@ class XenaDownloader:
                 return cached_path
 
         url = self._build_url(dataset_name)
-        filename = Path(all_sources[dataset_name]).name
+        filename = _FILENAME_OVERRIDES.get(
+            dataset_name, Path(all_sources[dataset_name]).name
+        )
         dest_path = self.file_manager.cache_dir / filename
 
         self.logger.info("Downloading %r from %s", dataset_name, url)
@@ -171,6 +213,12 @@ class XenaDownloader:
                 results[name] = self.download_file(name, force=force)
             except KeyError:
                 self.logger.error("Unknown dataset name: %r — skipping.", name)
+            except ManualDownloadRequired as exc:
+                self.logger.warning(
+                    "%r requires a manual download:\n%s",
+                    name,
+                    exc.instructions,
+                )
             except (httpx.HTTPStatusError, httpx.RequestError) as exc:
                 self.logger.error(
                     "Failed to download %r after retries: %s", name, exc

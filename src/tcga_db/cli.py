@@ -175,12 +175,18 @@ def download(datasets: tuple[str, ...], force: bool, load_data: bool) -> None:
     """
     from .downloader.xena_client import (
         EXTERNAL_SOURCES,
+        MANUAL_SOURCES,
         PHASE_1_SOURCES,
         PHASE_2_SOURCES,
         XenaDownloader,
     )
 
-    all_sources = {**PHASE_1_SOURCES, **PHASE_2_SOURCES, **EXTERNAL_SOURCES}
+    all_sources = {
+        **PHASE_1_SOURCES,
+        **PHASE_2_SOURCES,
+        **EXTERNAL_SOURCES,
+        **MANUAL_SOURCES,
+    }
     if datasets:
         requested = list(datasets)
         unknown = set(requested) - set(all_sources)
@@ -204,10 +210,19 @@ def download(datasets: tuple[str, ...], force: bool, load_data: bool) -> None:
         if name in downloaded:
             path = downloaded[name]
             table.add_row(name, "[green]downloaded[/green]", str(path.name))
+        elif name in MANUAL_SOURCES:
+            table.add_row(name, "[yellow]manual[/yellow]", "")
         else:
             table.add_row(name, "[red]failed[/red]", "")
 
     console.print(table)
+
+    for name in requested:
+        if name in MANUAL_SOURCES and name not in downloaded:
+            console.print(
+                f"\n[yellow]{name}[/yellow] must be fetched by hand:\n"
+                f"{MANUAL_SOURCES[name]}"
+            )
 
     if load_data:
         _require_initialized_database()

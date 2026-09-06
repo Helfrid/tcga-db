@@ -141,8 +141,9 @@ class BaseProcessor(ABC):
 
         Supported formats are inferred from the file extension:
 
-        * ``.tsv``, ``.probemap``, ``.tsv.gz``, ``.probemap.gz`` — tab-
-          separated values.
+        * ``.tsv``, ``.txt``, ``.xena``, ``.probemap`` (and their ``.gz``
+          variants) — tab-separated values.  PanCanAtlas ships several
+          TSV files under a ``.txt`` extension.
         * ``.csv``, ``.csv.gz`` — comma-separated values.
 
         Args:
@@ -166,14 +167,15 @@ class BaseProcessor(ABC):
 
         self.logger.info("Loading file: %s", file_path)
 
-        if suffix in {".tsv", ".probemap"}:
+        if suffix in {".tsv", ".txt", ".xena", ".probemap"}:
             df = pd.read_csv(file_path, sep="\t")
         elif suffix == ".csv":
             df = pd.read_csv(file_path, sep=",")
         else:
             raise ValueError(
                 f"Unsupported file extension '{suffix}' for {file_path}. "
-                "Expected .csv, .tsv, or .probemap (optionally .gz compressed)."
+                "Expected .csv, .tsv, .txt, .xena or .probemap "
+                "(optionally .gz compressed)."
             )
 
         self.logger.info(

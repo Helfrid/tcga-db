@@ -4,11 +4,16 @@ Loads ABSOLUTE/ASCAT purity and ploidy estimates plus MSI status into the
 sample_qc table.
 
 Primary source: TCGA_mastercalls.abs_tables_JSedit.fixed.txt
-  (Xena Pan-Cancer Atlas)
+  (GDC PanCanAtlas publication page, open access)
 
 Expected columns (flexible rename map handles ABSOLUTE output variants):
 
-    Tumor_Sample_Barcode  Purity  Ploidy  Genome.doublings  ...
+    array  sample  call status  purity  ploidy  Genome doublings  ...
+
+Note the file carries two barcode columns: ``array`` holds the short
+sample barcode (``TCGA-OR-A5J1-01``) that matches ``samples.sample_id``,
+while ``sample`` holds the full aliquot barcode.  ``_COL_CANDIDATES``
+resolves them in priority order so only one becomes ``sample_id``.
 
 MSI status is optional; if not present in the ABSOLUTE file it can be
 loaded from a separate clinical annotation file by running the processor
@@ -25,30 +30,36 @@ from ..base import BaseProcessor
 
 logger = get_logger(__name__)
 
-# Flexible column rename: source variants → our schema
-_COL_MAP: dict[str, str] = {
-    # Sample barcode
-    "array": "sample_id",
-    "Tumor_Sample_Barcode": "sample_id",
-    "sample": "sample_id",
-    "Sample": "sample_id",
-    "sampleID": "sample_id",
-    # Purity
-    "Purity": "tumour_purity",
-    "purity": "tumour_purity",
-    "Cancer.DNA.fraction": "tumour_purity",
-    # Ploidy
-    "Ploidy": "ploidy",
-    "ploidy": "ploidy",
-    # Genome doublings (WGD indicator)
-    "Genome.doublings": "genome_doublings",
-    "genome_doublings": "genome_doublings",
-    "WGD": "genome_doublings",
-    # MSI status (optional)
-    "MSI_status": "msi_status",
-    "MSI.status": "msi_status",
-    "msi_status": "msi_status",
-    "MANTIS_MSI_status": "msi_status",
+# Source column candidates per target column, in priority order.  Several
+# ABSOLUTE variants ship more than one usable column (e.g. both 'array' and
+# 'sample' barcodes), so the first match wins and the rest are ignored.
+_COL_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "sample_id": (
+        "array",
+        "Tumor_Sample_Barcode",
+        "sampleID",
+        "sample",
+        "Sample",
+    ),
+    "tumour_purity": (
+        "purity",
+        "Purity",
+        "Cancer DNA fraction",
+        "Cancer.DNA.fraction",
+    ),
+    "ploidy": ("ploidy", "Ploidy"),
+    "genome_doublings": (
+        "Genome doublings",
+        "Genome.doublings",
+        "genome_doublings",
+        "WGD",
+    ),
+    "msi_status": (
+        "MSI_status",
+        "MSI.status",
+        "msi_status",
+        "MANTIS_MSI_status",
+    ),
 }
 
 _OUTPUT_COLS = [
@@ -94,13 +105,20 @@ class SampleQCProcessor(BaseProcessor):
         """
         warnings: list[str] = []
 
-        rename = {c: _COL_MAP[c] for c in df.columns if c in _COL_MAP}
-        df = df.rename(columns=rename)
+        source_columns = list(df.columns)
+        rename: dict[str, str] = {}
+        for target, candidates in _COL_CANDIDATES.items():
+            for source in candidates:
+                if source in df.columns:
+                    rename[source] = target
+                    break
+
+        df = df[list(rename)].rename(columns=rename)
 
         if "sample_id" not in df.columns:
             raise ValueError(
                 "Cannot identify sample barcode column in QC file. "
-                f"Available columns: {list(df.columns)[:20]}"
+                f"Available columns: {source_columns[:20]}"
             )
 
         before = len(df)
