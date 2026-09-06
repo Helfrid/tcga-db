@@ -39,6 +39,17 @@ EXTERNAL_SOURCES: dict[str, str] = {
         "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human"
         "/release_23/gencode.v23.annotation.gtf.gz"
     ),
+    # TCGA WES SigProfiler SBS exposures (Alexandrov et al. 2020 Nature).
+    # The canonical Synapse entity (syn11801497) is an external link to the
+    # ICGC DCC portal, retired June 2024, so it no longer resolves.  The
+    # PCAWG7 R package vendors the identical CSV; pinned to a commit so the
+    # download stays reproducible.
+    "mutational_signatures": (
+        "https://raw.githubusercontent.com/steverozen/PCAWG7"
+        "/96447a82a9099a33c4f39caf11a03f5233de41f1"
+        "/data-raw/sig.profiler.exposures"
+        "/TCGA_WES_sigProfiler_SBS_signatures_in_samples.csv"
+    ),
 }
 
 # GDC data endpoints are keyed by UUID, so the URL carries no filename.
@@ -46,23 +57,10 @@ _FILENAME_OVERRIDES: dict[str, str] = {
     "sample_qc": "TCGA_mastercalls.abs_tables_JSedit.fixed.txt",
 }
 
-# Datasets with no automated download route.  PanCanAtlas publishes no
-# mutational signature exposures, and the Synapse release is behind a
-# login, so the file has to be fetched by hand.
-MANUAL_SOURCES: dict[str, str] = {
-    "mutational_signatures": (
-        "COSMIC SBS signature exposures are not part of the GDC PanCanAtlas "
-        "release.\n"
-        "Download the TCGA SBS signature activity table from Synapse "
-        "syn11738669\n"
-        "(Alexandrov et al. 2020, Nature — free registration required), then:\n"
-        "  1. save it as data/cache/TCGA_SBS_signatures.tsv\n"
-        "  2. run: tcga-db load\n"
-        "Alternatively, derive exposures locally from the MC3 mutations "
-        "already\n"
-        "in the database using SigProfilerExtractor or sigminer."
-    ),
-}
+# Datasets with no automated download route.  Empty for now: every
+# dataset resolves to a URL.  Kept as the registry for anything that
+# later needs credentials or a click-through licence.
+MANUAL_SOURCES: dict[str, str] = {}
 
 _CHUNK_SIZE = 64 * 1024  # 64 KB per read
 

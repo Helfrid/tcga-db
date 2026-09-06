@@ -4,19 +4,30 @@ Loads per-patient COSMIC SBS mutational signature exposures from a
 wide-format TSV (samples × signatures) and melts to long format for the
 mutational_signatures table.
 
-Expected source file format (TSV, one row per sample):
+Expected source file format (CSV or TSV, one row per sample):
 
-    Sample  SBS1  SBS2  SBS3  ...
-    TCGA-A8-A06X-01  100.5  23.2  0.0  ...
+    Cancer Types,Sample Names,Accuracy,SBS1,SBS2,SBS3,...
+    AML,TCGA-AB-2802-03B-01W-0728-08,0.811,3,0,0,...
 
-The first column can be named ``Sample``, ``sample``, ``patient``,
-``Tumor_Sample_Barcode``, or ``bcr_patient_barcode``.  Signature columns
-must start with ``SBS``, ``DBS``, or ``ID`` (COSMIC naming convention).
+The sample column is resolved from :data:`_SAMPLE_COL_CANDIDATES` in
+priority order, falling back to the first column.  Signature columns must
+start with ``SBS``, ``DBS``, or ``ID`` (COSMIC naming convention); any
+other column (``Cancer Types``, ``Accuracy``) is ignored.
 
-Recommended source: Alexandrov et al. 2020 Cell — TCGA SBS signature
-activities (Synapse syn11738669, requires free registration).  Place the
-downloaded file in data/cache/ as ``TCGA_SBS_signatures.tsv`` and register
-it with the FileManager before running ``tcga-db load``.
+Source: Alexandrov et al. 2020 Nature, "The repertoire of mutational
+signatures in human cancer" — TCGA WES SigProfiler SBS activities,
+9,493 samples × 65 signatures.
+
+The canonical copy lived on Synapse (syn11801497), but that entity is an
+external link to the ICGC DCC portal, which was retired in June 2024, so
+the Synapse download no longer resolves.  We therefore pull the file from
+the `PCAWG7 <https://github.com/steverozen/PCAWG7>`_ R package, which
+vendors the identical CSV, pinned to a commit for reproducibility.
+
+Exposures are mutation counts attributed to each signature, not
+fractions.  Barcodes are full aliquot barcodes and are truncated to the
+12-character patient ID; the 37 patients with two sequenced samples are
+resolved to one row per patient (see :meth:`transform_data`).
 """
 
 import pandas as pd
@@ -26,16 +37,19 @@ from ..base import BaseProcessor
 
 logger = get_logger(__name__)
 
-# Column names that may contain the sample/patient identifier
-_SAMPLE_COL_CANDIDATES = {
+# Column names that may hold the sample/patient identifier, in priority
+# order.  A tuple, not a set: iteration order decides which wins when a
+# file carries more than one candidate.
+_SAMPLE_COL_CANDIDATES = (
+    "Sample Names",
     "Sample",
     "sample",
-    "patient",
-    "patient_id",
     "Tumor_Sample_Barcode",
     "bcr_patient_barcode",
+    "patient_id",
+    "patient",
     "SAMPLE_ID",
-}
+)
 
 # Prefixes that identify signature columns
 _SIG_PREFIXES = ("SBS", "DBS", "ID")
@@ -128,9 +142,13 @@ class MutationalSignaturesProcessor(BaseProcessor):
 
         Steps:
         1. Extract patient_id (first 12 chars if TCGA barcode).
-        2. Melt wide → long (patient_id, signature_id, exposure).
-        3. Filter to patients present in the patients table.
-        4. Drop rows where exposure is NaN or zero.
+        2. Collapse patients with more than one sequenced sample to a
+           single row, keeping the first barcode in sorted order.  The
+           table is keyed on (patient_id, signature_id), so duplicates
+           would violate the primary key.
+        3. Melt wide → long (patient_id, signature_id, exposure).
+        4. Drop rows where exposure is NaN or zero (sparse storage).
+        5. Filter to patients present in the patients table.
 
         Args:
             df: Validated DataFrame from :meth:`validate_data`.
@@ -145,6 +163,19 @@ class MutationalSignaturesProcessor(BaseProcessor):
         patient_ids = raw_id.copy()
         patient_ids[is_barcode] = raw_id[is_barcode].str[:12]
         df["patient_id"] = patient_ids
+
+        # One row per patient: 37 TCGA patients have two sequenced
+        # samples.  Sort by the full barcode so the choice is stable
+        # across runs rather than dependent on file order.
+        before = len(df)
+        df = df.sort_values(["patient_id", "_sample_col"])
+        df = df.drop_duplicates(subset=["patient_id"], keep="first")
+        collapsed = before - len(df)
+        if collapsed:
+            self.logger.info(
+                "Collapsed %d extra samples to one row per patient",
+                collapsed,
+            )
 
         sig_cols = [c for c in df.columns if _is_signature_col(c)]
 
