@@ -16,11 +16,39 @@ PHASE_1_SOURCES: dict[str, str] = {
     "expression_tpm": "TcgaTargetGtex_rsem_gene_tpm.gz",
 }
 
+# Phase 2: Xena Pan-Cancer Atlas Hub (absolute URLs, different base from Toil)
+_PANCAN_BASE = "https://pancanatlas.xenahubs.net/download"
+
+PHASE_2_SOURCES: dict[str, str] = {
+    "copy_number": (
+        f"{_PANCAN_BASE}"
+        "/broad.mit.edu_PANCAN_Genome_Wide_SNP_6_whitelisted.gene.xena.gz"
+    ),
+    "somatic_mutations": (f"{_PANCAN_BASE}/mc3.v0.2.8.PUBLIC.xena.gz"),
+    # ABSOLUTE purity/ploidy — Pan-Cancer Atlas file returns 403 on public
+    # S3.  Download manually from Synapse syn7824274 (free registration)
+    # and place in data/cache/ as 'TCGA_mastercalls.abs_tables_JSedit.fixed.txt'.
+    # Alternatively the GDC open-access UUID below may work:
+    "sample_qc": (
+        "https://api.gdc.cancer.gov/data/4f277128-f793-4354-a13d-30cc7fe9f6b5"
+    ),
+}
+
 # Sources with absolute URLs (not relative to Xena base_url)
 EXTERNAL_SOURCES: dict[str, str] = {
     "gencode_gtf": (
         "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human"
         "/release_23/gencode.v23.annotation.gtf.gz"
+    ),
+    # TCGA COSMIC SBS signature exposures (Alexandrov et al. 2020 Cell).
+    # Available from Synapse syn11738669 (requires authentication).
+    # Download manually and place in data/cache/ as
+    # 'TCGA_SBS_signatures.tsv', then register with:
+    #   tcga-db download --datasets mutational_signatures
+    # Alternatively set TCGA_MUTATIONAL_SIGNATURES_URL env var to a
+    # direct download URL.
+    "mutational_signatures": (
+        "https://api.gdc.cancer.gov/data/1c8cfe5f-e52d-41ba-94da-f15ea1337189"
     ),
 }
 
@@ -51,9 +79,11 @@ class XenaDownloader:
         """Return the list of dataset names available for download.
 
         Returns:
-            Sorted list of keys from :data:`PHASE_1_SOURCES`.
+            Sorted list of keys from all source dictionaries.
         """
-        return sorted(PHASE_1_SOURCES)
+        return sorted(
+            {**PHASE_1_SOURCES, **PHASE_2_SOURCES, **EXTERNAL_SOURCES}
+        )
 
     def download_file(
         self,
@@ -81,7 +111,11 @@ class XenaDownloader:
             httpx.RequestError: If a network-level error persists beyond the
                 retry limit.
         """
-        all_sources = {**PHASE_1_SOURCES, **EXTERNAL_SOURCES}
+        all_sources = {
+            **PHASE_1_SOURCES,
+            **PHASE_2_SOURCES,
+            **EXTERNAL_SOURCES,
+        }
         if dataset_name not in all_sources:
             raise KeyError(
                 f"Unknown dataset {dataset_name!r}. "
@@ -124,7 +158,11 @@ class XenaDownloader:
             that was downloaded (or already cached) successfully.  Datasets
             that fail are omitted and their errors are logged.
         """
-        all_sources = {**PHASE_1_SOURCES, **EXTERNAL_SOURCES}
+        all_sources = {
+            **PHASE_1_SOURCES,
+            **PHASE_2_SOURCES,
+            **EXTERNAL_SOURCES,
+        }
         targets = datasets if datasets is not None else list(all_sources)
         results: dict[str, Path] = {}
 
@@ -156,6 +194,8 @@ class XenaDownloader:
         """
         if dataset_name in EXTERNAL_SOURCES:
             return EXTERNAL_SOURCES[dataset_name]
+        if dataset_name in PHASE_2_SOURCES:
+            return PHASE_2_SOURCES[dataset_name]
         base = self.settings.xena.base_url.rstrip("/")
         return f"{base}/{PHASE_1_SOURCES[dataset_name]}"
 

@@ -17,8 +17,11 @@ from .database.schema import (
 logger = get_logger(__name__)
 console = Console()
 
-# Load order respects foreign key dependencies
+# Load order respects foreign key dependencies.
+# Phase 2 datasets follow Phase 1; sample_qc after samples,
+# copy_number / mutations / signatures after genes + samples + patients.
 LOAD_ORDER: list[str] = [
+    # Phase 1
     "gene_probemap",
     "phenotype_patients",
     "phenotype_samples",
@@ -26,22 +29,34 @@ LOAD_ORDER: list[str] = [
     "tissue_mapping",
     "expression_counts",
     "expression_tpm",
+    # Phase 2
+    "sample_qc",
+    "copy_number",
+    "somatic_mutations",
+    "mutational_signatures",
 ]
 
 
 def _get_processor(dataset_name: str):  # noqa: ANN202
     """Get the appropriate processor for a dataset."""
+    from .etl.processors.copy_number import CopyNumberWideProcessor
     from .etl.processors.expression_wide import (
         ExpressionCountsWideProcessor,
         ExpressionTPMWideProcessor,
     )
     from .etl.processors.gene import GeneProcessor
+    from .etl.processors.mutational_signatures import (
+        MutationalSignaturesProcessor,
+    )
     from .etl.processors.patient import PatientProcessor
     from .etl.processors.sample import SampleProcessor
+    from .etl.processors.sample_qc import SampleQCProcessor
+    from .etl.processors.somatic_mutations import SomaticMutationProcessor
     from .etl.processors.survival import SurvivalProcessor
     from .etl.processors.tissue_mapping import TissueMappingProcessor
 
     registry: dict[str, type] = {
+        # Phase 1
         "gene_probemap": GeneProcessor,
         "phenotype_patients": PatientProcessor,
         "phenotype_samples": SampleProcessor,
@@ -49,6 +64,11 @@ def _get_processor(dataset_name: str):  # noqa: ANN202
         "tissue_mapping": TissueMappingProcessor,
         "expression_counts": ExpressionCountsWideProcessor,
         "expression_tpm": ExpressionTPMWideProcessor,
+        # Phase 2
+        "sample_qc": SampleQCProcessor,
+        "copy_number": CopyNumberWideProcessor,
+        "somatic_mutations": SomaticMutationProcessor,
+        "mutational_signatures": MutationalSignaturesProcessor,
     }
     cls = registry.get(dataset_name)
     if cls is None:
@@ -96,18 +116,24 @@ def init(force: bool) -> None:
     settings = get_settings()
     version = get_current_schema_version()
 
-    if version and not force:
-        console.print(
-            f"Database already initialised (v{version}). "
-            "Use --force to reinitialise."
-        )
-        return
+    current_version = Schema.CURRENT_VERSION
 
     if force and version:
         from .database.schema import drop_all_tables
 
         console.print("Dropping existing tables...")
         drop_all_tables()
+    elif version == current_version and not force:
+        console.print(
+            f"Database already at current schema (v{version}). "
+            "Use --force to reinitialise from scratch."
+        )
+        return
+    elif version and version != current_version:
+        console.print(
+            f"Migrating schema v{version} → v{current_version} "
+            "(new tables added, existing data preserved)..."
+        )
 
     console.print(f"Database: {settings.database.path}")
     console.print("Creating tables...")
@@ -129,11 +155,7 @@ def init(force: bool) -> None:
 
 
 @cli.command()
-@click.option(
-    "--datasets",
-    multiple=True,
-    help="Specific datasets to download (default: all Phase 1)",
-)
+@click.argument("datasets", nargs=-1)
 @click.option("--force", is_flag=True, help="Re-download cached files")
 @click.option(
     "--load-data",
@@ -141,14 +163,24 @@ def init(force: bool) -> None:
     help="Load data into DB after download",
 )
 def download(datasets: tuple[str, ...], force: bool, load_data: bool) -> None:
-    """Download Xena Toil Hub data files."""
+    """Download Xena data files.
+
+    Optionally specify one or more DATASETS to download; omit to download all.
+
+    \b
+    Examples:
+      tcga-db download                               # all datasets
+      tcga-db download copy_number somatic_mutations
+      tcga-db download sample_qc --load-data
+    """
     from .downloader.xena_client import (
         EXTERNAL_SOURCES,
         PHASE_1_SOURCES,
+        PHASE_2_SOURCES,
         XenaDownloader,
     )
 
-    all_sources = {**PHASE_1_SOURCES, **EXTERNAL_SOURCES}
+    all_sources = {**PHASE_1_SOURCES, **PHASE_2_SOURCES, **EXTERNAL_SOURCES}
     if datasets:
         requested = list(datasets)
         unknown = set(requested) - set(all_sources)
@@ -283,10 +315,11 @@ def status() -> None:
     table.add_column("Type")
     table.add_column("Rows", justify="right")
 
-    # Check for Parquet-backed expression views
+    # Check for Parquet-backed wide tables (expression + copy number)
     parquet_tables = {
         "expression_counts_wide": Path("data/expression_counts_wide.parquet"),
         "expression_tpm_wide": Path("data/expression_tpm_wide.parquet"),
+        "copy_number_wide": Path("data/copy_number_wide.parquet"),
     }
 
     for name in schema.get_creation_order():
