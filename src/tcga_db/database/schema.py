@@ -30,9 +30,9 @@ class TableSchema:
 
 
 class Schema:
-    """Database schema management for Phase 1: Expression + Survival."""
+    """Database schema management (Phase 1 + Phase 2)."""
 
-    CURRENT_VERSION = "1.0.0"
+    CURRENT_VERSION = "2.0.0"
 
     def __init__(self) -> None:
         self.db_manager = get_db_manager()
@@ -40,7 +40,7 @@ class Schema:
         self._define_schema()
 
     def _define_schema(self) -> None:
-        """Define the complete Phase 1 database schema."""
+        """Define the complete Phase 1 + Phase 2 database schema."""
         self._define_system_tables()
         self._define_metadata_tables()
         self._define_core_data_tables()
@@ -197,12 +197,108 @@ class Schema:
             )
         )
 
+        self._add_table(
+            TableSchema(
+                name="sample_qc",
+                table_type=TableType.METADATA,
+                dependencies=["samples"],
+                description=(
+                    "Tumour purity, ploidy and MSI status from ABSOLUTE/ASCAT "
+                    "estimates (TCGA tumour samples)"
+                ),
+                sql="""
+            CREATE TABLE IF NOT EXISTS sample_qc (
+                sample_id VARCHAR PRIMARY KEY,
+                tumour_purity DOUBLE,
+                ploidy DOUBLE,
+                genome_doublings INTEGER,
+                msi_status VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sample_id) REFERENCES samples(sample_id)
+            )
+            """,
+            )
+        )
+
     # ------------------------------------------------------------------
-    # Core data tables (wide-format expression matrices)
+    # Core data tables (wide-format expression/CN matrices, mutations)
     # ------------------------------------------------------------------
 
     def _define_core_data_tables(self) -> None:
-        """Define wide-format expression matrix tables."""
+        """Define wide-format expression/copy-number matrices and mutation tables."""
+        self._add_table(
+            TableSchema(
+                name="copy_number_wide",
+                table_type=TableType.CORE_DATA,
+                dependencies=["samples"],
+                description=(
+                    "GISTIC2 thresholded copy number (TCGA tumour samples "
+                    "× protein-coding genes, values -2 to +2)"
+                ),
+                sql="""
+            CREATE TABLE IF NOT EXISTS copy_number_wide (
+                sample_id VARCHAR PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sample_id) REFERENCES samples(sample_id)
+            )
+            """,
+            )
+        )
+
+        self._add_table(
+            TableSchema(
+                name="somatic_mutations",
+                table_type=TableType.CORE_DATA,
+                dependencies=["samples", "patients", "genes"],
+                description=(
+                    "MC3 somatic mutations (SNVs + indels) with functional "
+                    "annotation from Xena Pan-Cancer Atlas"
+                ),
+                sql="""
+            CREATE TABLE IF NOT EXISTS somatic_mutations (
+                mutation_id VARCHAR PRIMARY KEY,
+                sample_id VARCHAR NOT NULL,
+                patient_id VARCHAR NOT NULL,
+                gene_id VARCHAR,
+                gene_symbol VARCHAR NOT NULL,
+                chromosome VARCHAR,
+                start_position BIGINT,
+                end_position BIGINT,
+                variant_classification VARCHAR,
+                variant_type VARCHAR,
+                reference_allele VARCHAR,
+                tumor_allele VARCHAR,
+                hgvsp_short VARCHAR,
+                vaf DOUBLE,
+                FOREIGN KEY (sample_id) REFERENCES samples(sample_id),
+                FOREIGN KEY (patient_id) REFERENCES patients(patient_id),
+                FOREIGN KEY (gene_id) REFERENCES genes(gene_id)
+            )
+            """,
+            )
+        )
+
+        self._add_table(
+            TableSchema(
+                name="mutational_signatures",
+                table_type=TableType.CORE_DATA,
+                dependencies=["patients"],
+                description=(
+                    "COSMIC SBS mutational signature exposures per patient "
+                    "(long format: patient × signature)"
+                ),
+                sql="""
+            CREATE TABLE IF NOT EXISTS mutational_signatures (
+                patient_id VARCHAR NOT NULL,
+                signature_id VARCHAR NOT NULL,
+                exposure DOUBLE NOT NULL,
+                PRIMARY KEY (patient_id, signature_id),
+                FOREIGN KEY (patient_id) REFERENCES patients(patient_id)
+            )
+            """,
+            )
+        )
+
         self._add_table(
             TableSchema(
                 name="expression_counts_wide",

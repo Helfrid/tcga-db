@@ -48,21 +48,30 @@ class TestSchemaDefinition:
     """Tests for schema table definitions."""
 
     def test_schema_has_expected_tables(self, schema: Schema) -> None:
+        # Phase 1 + Phase 2 tables
         expected = {
+            # system
             "schema_version",
             "data_imports",
+            # metadata
             "genes",
             "patients",
             "samples",
             "survival",
+            "sample_qc",
+            # derived
             "tissue_mapping",
+            # core data
             "expression_counts_wide",
             "expression_tpm_wide",
+            "copy_number_wide",
+            "somatic_mutations",
+            "mutational_signatures",
         }
         assert set(schema._tables.keys()) == expected
 
-    def test_schema_has_nine_tables(self, schema: Schema) -> None:
-        assert len(schema._tables) == 9
+    def test_schema_has_thirteen_tables(self, schema: Schema) -> None:
+        assert len(schema._tables) == 13
 
     def test_system_tables(self, schema: Schema) -> None:
         system_tables = schema.get_tables_by_type(TableType.SYSTEM)
@@ -72,7 +81,13 @@ class TestSchemaDefinition:
     def test_metadata_tables(self, schema: Schema) -> None:
         metadata_tables = schema.get_tables_by_type(TableType.METADATA)
         names = {t.name for t in metadata_tables}
-        assert names == {"genes", "patients", "samples", "survival"}
+        assert names == {
+            "genes",
+            "patients",
+            "samples",
+            "survival",
+            "sample_qc",
+        }
 
     def test_core_data_tables(self, schema: Schema) -> None:
         core_tables = schema.get_tables_by_type(TableType.CORE_DATA)
@@ -80,6 +95,9 @@ class TestSchemaDefinition:
         assert names == {
             "expression_counts_wide",
             "expression_tpm_wide",
+            "copy_number_wide",
+            "somatic_mutations",
+            "mutational_signatures",
         }
 
     def test_derived_tables(self, schema: Schema) -> None:
@@ -106,7 +124,7 @@ class TestCreationOrder:
 
     def test_creation_order_has_all_tables(self, schema: Schema) -> None:
         order = schema.get_creation_order()
-        assert len(order) == 9
+        assert len(order) == 13
         assert set(order) == set(schema._tables.keys())
 
     def test_schema_version_comes_first(self, schema: Schema) -> None:
@@ -154,7 +172,7 @@ class TestTableCreation:
     def test_schema_version_is_set(self) -> None:
         create_tables()
         version = get_current_schema_version()
-        assert version == "1.0.0"
+        assert version == "2.0.0"
 
     def test_create_specific_tables(self) -> None:
         create_tables(["schema_version", "data_imports"])
@@ -179,7 +197,7 @@ class TestTableCreation:
         create_tables()
         create_tables()
         version = get_current_schema_version()
-        assert version == "1.0.0"
+        assert version == "2.0.0"
 
 
 class TestGenesTable:
