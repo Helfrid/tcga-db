@@ -267,3 +267,6 @@ data/
 *.duckdb
 *.duckdb.wal
 *.parquet
+
+# Generated analysis output
+figures/

@@ -46,4 +46,5 @@ repos:
     rev: v2.4.1
     hooks:
         - id: codespell
-          args: ["--write-changes"]  # Remove this if you prefer to review fixes manually
+          # "nd" is a status code in the analysis layer (no data)
+          args: ["--write-changes", "--ignore-words-list=nd"]
