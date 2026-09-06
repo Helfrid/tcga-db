@@ -1,3 +1,9 @@
+## v0.3.0 (2026-09-06)
+
+### Feat
+
+- **etl**: load COSMIC SBS signature exposures from PCAWG7
+
 ## v0.2.1 (2026-09-06)
 
 ### Fix
