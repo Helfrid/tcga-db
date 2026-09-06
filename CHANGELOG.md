@@ -1,3 +1,9 @@
+## v0.2.1 (2026-09-06)
+
+### Fix
+
+- **etl**: load sample_qc from the GDC PanCanAtlas ABSOLUTE table
+
 ## v0.2.0 (2026-09-06)
 
 ### Feat
