@@ -172,7 +172,7 @@ class TestTableCreation:
     def test_schema_version_is_set(self) -> None:
         create_tables()
         version = get_current_schema_version()
-        assert version == "2.0.0"
+        assert version == Schema.CURRENT_VERSION
 
     def test_create_specific_tables(self) -> None:
         create_tables(["schema_version", "data_imports"])
@@ -197,7 +197,7 @@ class TestTableCreation:
         create_tables()
         create_tables()
         version = get_current_schema_version()
-        assert version == "2.0.0"
+        assert version == Schema.CURRENT_VERSION
 
 
 class TestGenesTable:

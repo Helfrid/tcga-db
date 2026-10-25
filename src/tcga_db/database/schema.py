@@ -32,7 +32,7 @@ class TableSchema:
 class Schema:
     """Database schema management (Phase 1 + Phase 2)."""
 
-    CURRENT_VERSION = "2.0.0"
+    CURRENT_VERSION = "2.1.0"
 
     def __init__(self) -> None:
         self.db_manager = get_db_manager()
@@ -270,6 +270,8 @@ class Schema:
                 tumor_allele VARCHAR,
                 hgvsp_short VARCHAR,
                 vaf DOUBLE,
+                sift VARCHAR,
+                polyphen VARCHAR,
                 FOREIGN KEY (sample_id) REFERENCES samples(sample_id),
                 FOREIGN KEY (patient_id) REFERENCES patients(patient_id),
                 FOREIGN KEY (gene_id) REFERENCES genes(gene_id)
@@ -435,6 +437,37 @@ class Schema:
             raise
 
 
+#: Columns added to existing tables after their initial release.
+#: ``CREATE TABLE IF NOT EXISTS`` cannot add a column to a table that
+#: already exists, so these are applied separately and idempotently.
+_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("somatic_mutations", "sift", "VARCHAR"),
+    ("somatic_mutations", "polyphen", "VARCHAR"),
+)
+
+
+def apply_column_migrations() -> None:
+    """Add any missing columns listed in :data:`_COLUMN_MIGRATIONS`."""
+    db_manager = get_db_manager()
+
+    for table, column, col_type in _COLUMN_MIGRATIONS:
+        if not db_manager.table_exists(table):
+            continue
+        existing = {
+            row[0]
+            for row in db_manager.execute(
+                f"SELECT column_name FROM information_schema.columns "
+                f"WHERE table_name = '{table}'"  # noqa: S608
+            ).fetchall()
+        }
+        if column in existing:
+            continue
+        logger.info("Adding column %s.%s (%s)", table, column, col_type)
+        db_manager.execute(
+            f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+        )
+
+
 def create_tables(tables: list[str] | None = None) -> None:
     """Create database tables in dependency order.
 
@@ -459,6 +492,8 @@ def create_tables(tables: list[str] | None = None) -> None:
 
     for table_name in table_names:
         schema.create_table(table_name)
+
+    apply_column_migrations()
 
     _update_schema_version(schema.CURRENT_VERSION)
 

@@ -6,6 +6,55 @@ import pandas as pd
 
 from ..base import BaseProcessor
 
+#: Toil phenotype disease name → TCGA study code.
+#: The phenotype file carries long disease names only; ``tissue_mapping``
+#: and the wider TCGA literature key on the four-letter study code, so the
+#: two cannot be joined without this translation.
+DISEASE_TO_STUDY_CODE: dict[str, str] = {
+    "Acute Myeloid Leukemia": "LAML",
+    "Adrenocortical Cancer": "ACC",
+    "Bladder Urothelial Carcinoma": "BLCA",
+    "Brain Lower Grade Glioma": "LGG",
+    "Breast Invasive Carcinoma": "BRCA",
+    "Cervical & Endocervical Cancer": "CESC",
+    "Cholangiocarcinoma": "CHOL",
+    "Colon Adenocarcinoma": "COAD",
+    "Diffuse Large B-Cell Lymphoma": "DLBC",
+    "Esophageal Carcinoma": "ESCA",
+    "Glioblastoma Multiforme": "GBM",
+    "Head & Neck Squamous Cell Carcinoma": "HNSC",
+    "Kidney Chromophobe": "KICH",
+    "Kidney Clear Cell Carcinoma": "KIRC",
+    "Kidney Papillary Cell Carcinoma": "KIRP",
+    "Liver Hepatocellular Carcinoma": "LIHC",
+    "Lung Adenocarcinoma": "LUAD",
+    "Lung Squamous Cell Carcinoma": "LUSC",
+    "Mesothelioma": "MESO",
+    "Ovarian Serous Cystadenocarcinoma": "OV",
+    "Pancreatic Adenocarcinoma": "PAAD",
+    "Pheochromocytoma & Paraganglioma": "PCPG",
+    "Prostate Adenocarcinoma": "PRAD",
+    "Rectum Adenocarcinoma": "READ",
+    "Sarcoma": "SARC",
+    "Skin Cutaneous Melanoma": "SKCM",
+    "Stomach Adenocarcinoma": "STAD",
+    "Testicular Germ Cell Tumor": "TGCT",
+    "Thymoma": "THYM",
+    "Thyroid Carcinoma": "THCA",
+    "Uterine Carcinosarcoma": "UCS",
+    "Uterine Corpus Endometrioid Carcinoma": "UCEC",
+    "Uveal Melanoma": "UVM",
+}
+
+#: Column in the Toil phenotype file holding the disease name.
+_DISEASE_COL = "primary disease or tissue"
+
+#: Assigned where the phenotype file carries no disease name at all.
+#: The only such TCGA barcode is a "Control Analyte" (sample type 20),
+#: which is not a tumour donor but is still referenced by ``samples``,
+#: so it is labelled rather than dropped.
+_CONTROL_CODE = "CONTROL"
+
 
 class PatientProcessor(BaseProcessor):
     """Extracts unique TCGA patients from the Toil phenotype file.
@@ -15,7 +64,13 @@ class PatientProcessor(BaseProcessor):
 
     TCGA barcodes encode patient ID in the first 12 characters
     (e.g. TCGA-A7-A13E). Multiple samples map to the same patient.
+
+    ``cancer_type`` is the four-letter TCGA study code (BRCA, LUAD, ...)
+    translated from the phenotype file's long disease name via
+    :data:`DISEASE_TO_STUDY_CODE`, and ``project_id`` is ``TCGA-<code>``.
     """
+
+    EXPECTED_SOURCE_COLUMNS = (_DISEASE_COL, "_study")
 
     def __init__(self, batch_size: int | None = None) -> None:
         super().__init__(dataset_name="phenotype", batch_size=batch_size)
@@ -59,33 +114,51 @@ class PatientProcessor(BaseProcessor):
         return df, warnings
 
     def transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Extract unique patients from TCGA barcodes."""
-        # Extract patient_id (first 12 chars of barcode)
+        """Extract unique patients from TCGA barcodes.
+
+        Args:
+            df: Validated phenotype rows, TCGA only.
+
+        Returns:
+            One row per patient with ``patient_id``, ``project_id`` and
+            ``cancer_type`` (four-letter TCGA study code).
+
+        Raises:
+            ValueError: If any disease name has no study-code mapping.
+        """
         df = df.assign(patient_id=df["sample_id"].str[:12])
 
-        # Derive project_id and cancer_type
-        # project_id comes from _primary_disease or the barcode TSS
-        # For now derive from phenotype columns if available
-        if "_primary_disease" in df.columns:
-            patient_df = (
-                df.groupby("patient_id")
-                .agg(primary_disease=("_primary_disease", "first"))
-                .reset_index()
+        patient_df = (
+            df.groupby("patient_id")
+            .agg(primary_disease=(_DISEASE_COL, "first"))
+            .reset_index()
+        )
+
+        unmapped = sorted(
+            set(patient_df["primary_disease"].dropna())
+            - set(DISEASE_TO_STUDY_CODE)
+        )
+        if unmapped:
+            raise ValueError(
+                "No TCGA study code mapped for disease name(s): "
+                f"{unmapped}. Add them to DISEASE_TO_STUDY_CODE."
             )
-            # Map disease to TCGA project codes
-            patient_df = patient_df.assign(
-                project_id="TCGA-"
-                + patient_df["primary_disease"].fillna("UNKNOWN"),
-                cancer_type=patient_df["primary_disease"].fillna("UNKNOWN"),
+
+        cancer_type = (
+            patient_df["primary_disease"]
+            .map(DISEASE_TO_STUDY_CODE)
+            .fillna(_CONTROL_CODE)
+        )
+        n_control = int((cancer_type == _CONTROL_CODE).sum())
+        if n_control:
+            self.logger.warning(
+                "%d patient(s) have no disease name; labelled %s",
+                n_control,
+                _CONTROL_CODE,
             )
-        else:
-            # Fallback: extract from barcode TSS code
-            patient_df = (
-                df[["patient_id"]].drop_duplicates().reset_index(drop=True)
-            )
-            patient_df = patient_df.assign(
-                project_id="TCGA-UNKNOWN",
-                cancer_type="UNKNOWN",
-            )
+        patient_df = patient_df.assign(
+            cancer_type=cancer_type,
+            project_id="TCGA-" + cancer_type,
+        )
 
         return patient_df[["patient_id", "project_id", "cancer_type"]]
