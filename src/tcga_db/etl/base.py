@@ -89,6 +89,32 @@ class BaseProcessor(ABC):
         self.db_manager = get_db_manager()
         self.batch_size = batch_size or self.settings.xena.batch_size
 
+    #: Source-file columns a subclass depends on.  Checked immediately
+    #: after :meth:`load_file` so a renamed or absent upstream column
+    #: fails loudly instead of degrading to NULL.  Subclasses that can
+    #: accept any of several spellings should leave this empty and check
+    #: in :meth:`validate_data`.
+    EXPECTED_SOURCE_COLUMNS: tuple[str, ...] = ()
+
+    def require_source_columns(self, df: pd.DataFrame) -> None:
+        """Fail if any :attr:`EXPECTED_SOURCE_COLUMNS` is missing.
+
+        Args:
+            df: Raw DataFrame straight from :meth:`load_file`.
+
+        Raises:
+            ValueError: If one or more expected columns are absent.
+        """
+        missing = [
+            c for c in self.EXPECTED_SOURCE_COLUMNS if c not in df.columns
+        ]
+        if missing:
+            raise ValueError(
+                f"{self.__class__.__name__}: source file is missing "
+                f"expected column(s) {missing}. "
+                f"Available columns: {list(df.columns)[:20]}"
+            )
+
     # ------------------------------------------------------------------
     # Abstract interface — subclasses must override these
     # ------------------------------------------------------------------
@@ -301,6 +327,7 @@ class BaseProcessor(ABC):
 
             # Step 2 — load
             df = self.load_file(file_path)
+            self.require_source_columns(df)
             records_processed = len(df)
 
             # Step 3 — validate

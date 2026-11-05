@@ -46,13 +46,20 @@ _COL_MAP: dict[str, str] = {
     # Gene
     "gene": "gene_symbol",
     "Hugo_Symbol": "gene_symbol",
-    # Classification / type
+    # Classification / type.  The Xena MC3 file calls this "effect" and
+    # carries the standard MAF vocabulary (Missense_Mutation, Silent, ...).
+    # Without this entry variant_classification was silently NULL for
+    # every row — see _OPTIONAL_COLS backfill below.
+    "effect": "variant_classification",
     "Variant_Classification": "variant_classification",
     "Variant_Type": "variant_type",
     # Protein change
     "Amino_Acid_Change": "hgvsp_short",
     "HGVSp_Short": "hgvsp_short",
     "protein_change": "hgvsp_short",
+    # Functional prediction (present in the Xena MC3 file)
+    "SIFT": "sift",
+    "PolyPhen": "polyphen",
     # VAF
     "DNA_VAF": "vaf",
     "t_vaf": "vaf",
@@ -74,6 +81,8 @@ _OUTPUT_COLS = [
     "tumor_allele",
     "hgvsp_short",
     "vaf",
+    "sift",
+    "polyphen",
 ]
 
 _OPTIONAL_COLS = _OUTPUT_COLS[5:]  # everything after gene_symbol
@@ -93,6 +102,41 @@ def _mutation_id(row_key: str) -> str:
     ).hexdigest()
 
 
+def _derive_variant_type(ref: pd.Series, alt: pd.Series) -> pd.Series:
+    """Infer MAF ``Variant_Type`` from reference and tumour alleles.
+
+    The Xena MC3 file omits the column, but the standard categories
+    follow directly from the allele strings: a ``-`` placeholder marks an
+    insertion or deletion, and equal-length substitutions are SNP, DNP,
+    TNP or ONP by length.
+
+    Args:
+        ref: Reference alleles.
+        alt: Tumour alleles.
+
+    Returns:
+        Series of variant-type strings, ``None`` where undetermined.
+    """
+    ref_s = ref.fillna("").astype(str)
+    alt_s = alt.fillna("").astype(str)
+    len_by_n = {1: "SNP", 2: "DNP", 3: "TNP"}
+
+    def classify(r: str, a: str) -> str | None:
+        if not r or not a:
+            return None
+        if r == "-" or len(a) > len(r):
+            return "INS"
+        if a == "-" or len(r) > len(a):
+            return "DEL"
+        return len_by_n.get(len(r), "ONP")
+
+    return pd.Series(
+        [classify(r, a) for r, a in zip(ref_s, alt_s, strict=True)],
+        index=ref.index,
+        dtype=object,
+    )
+
+
 class SomaticMutationProcessor(BaseProcessor):
     """Load MC3 somatic mutations from the Xena Pan-Cancer Atlas.
 
@@ -102,6 +146,8 @@ class SomaticMutationProcessor(BaseProcessor):
     Args:
         batch_size: INSERT batch size override.
     """
+
+    EXPECTED_SOURCE_COLUMNS = ("sample", "gene", "effect")
 
     def __init__(self, batch_size: int | None = None) -> None:
         super().__init__(
@@ -165,6 +211,55 @@ class SomaticMutationProcessor(BaseProcessor):
 
         warnings.append(f"Loaded {len(df)} raw mutation records")
         return df, warnings
+
+    def clear_table(self) -> None:
+        """Drop and recreate the table instead of deleting its rows.
+
+        ``DELETE FROM somatic_mutations`` crashes DuckDB 1.5.1 with
+        SIGTRAP at this scale (2.3 M rows, three foreign keys); the
+        transaction rolls back cleanly but the process dies, so a
+        force-reload can never complete.  Dropping and recreating from
+        the schema definition is equivalent here — the table is always
+        repopulated in full from the MC3 file — and avoids the crash.
+        """
+        from ...database.schema import Schema, apply_column_migrations
+
+        table_name = self.get_table_name()
+        self.logger.warning("Dropping and recreating table: %s", table_name)
+        self.db_manager.execute(f"DROP TABLE IF EXISTS {table_name}")
+        Schema().create_table(table_name)
+        apply_column_migrations()
+
+    def insert_batch(self, df: pd.DataFrame) -> tuple[int, int]:
+        """Bulk-insert a batch via DuckDB DataFrame registration.
+
+        The inherited row-by-row ``executemany`` path crashes DuckDB
+        (SIGTRAP) on this table at full scale — 2.3 M rows across 16
+        columns with three foreign keys.  Registering the frame and
+        running a single ``INSERT ... SELECT`` avoids that, and is an
+        order of magnitude faster besides.
+
+        Args:
+            df: DataFrame whose columns map directly to table columns.
+
+        Returns:
+            A two-tuple of ``(inserted, skipped)``.
+        """
+        if df.empty:
+            return 0, 0
+
+        con = self.db_manager.connect()
+        col_list = ", ".join(df.columns)
+        con.register("_mutation_batch", df)
+        try:
+            con.execute(
+                f"INSERT INTO {self.get_table_name()} ({col_list}) "
+                f"SELECT {col_list} FROM _mutation_batch"  # noqa: S608
+            )
+        finally:
+            con.unregister("_mutation_batch")
+
+        return len(df), 0
 
     def transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Transform to somatic_mutations schema.
@@ -239,6 +334,13 @@ class SomaticMutationProcessor(BaseProcessor):
             row[0]: row[1] for row in gene_result.fetchall()
         }
         df["gene_id"] = df["gene_symbol"].map(gene_map)
+
+        # variant_type is absent from the Xena MC3 file but is
+        # recoverable from the allele lengths.
+        if "variant_type" not in df.columns:
+            df["variant_type"] = _derive_variant_type(
+                df["reference_allele"], df["tumor_allele"]
+            )
 
         # Add any optional columns that are absent
         for col in _OPTIONAL_COLS:
